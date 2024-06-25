@@ -8,6 +8,7 @@ from typing import Optional
 from enum import Enum
 from huggingface_hub import hf_hub_download
 
+from cryptography.fernet import Fernet
 
 app = typer.Typer()
 
@@ -32,6 +33,7 @@ class Dtype(str, Enum):
 @app.command()
 def serve(
     model_id: str,
+    fernet_key: str = typer.Option(..., help="Fernet key for token decryption"),
     revision: Optional[str] = None,
     sharded: bool = False,
     quantize: Optional[Quantization] = None,
@@ -91,6 +93,13 @@ def serve(
             f"LoRA adapters are enabled. This is an experimental feature and may not work as expected."
         )
 
+    # Validate and convert the Fernet key
+    try:
+        fernet_key = fernet_key.encode()
+        Fernet(fernet_key)  # This will raise an error if the key is invalid
+    except Exception as e:
+        raise typer.BadParameter(f"Invalid Fernet key: {str(e)}")
+
     # Downgrade enum into str for easier management later on
     quantize = None if quantize is None else quantize.value
     dtype = None if dtype is None else dtype.value
@@ -114,6 +123,7 @@ def serve(
         trust_remote_code,
         uds_path,
         max_input_tokens,
+        fernet_key,
     )
 
 

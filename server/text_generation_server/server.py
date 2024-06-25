@@ -46,6 +46,14 @@ class SignalHandler:
         print(f"Exiting gracefully: Signal {signum}")
         self.KEEP_PROCESSING = False
 
+from cryptography.fernet import Fernet
+
+def decrypt_tokens(self, encrypted_tokens):
+    decrypted_tokens = []
+    for token in encrypted_tokens:
+        decrypted_token = self.fernet.decrypt(token.encode())
+        decrypted_tokens.append(decrypted_token.decode())
+    return decrypted_tokens
 
 class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
     def __init__(
@@ -54,11 +62,13 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
         cache: Cache,
         quantize: Optional[str],
         server_urls: List[str],
+        fernet_key: bytes,
     ):
         self.cache = cache
         self.model = model
         self.quantize = quantize
         self.server_urls = server_urls
+        self.fernet = Fernet(fernet_key)
         # For some reason, inference_mode does not work well with GLOO which we use on CPU
         if model.device.type == "cuda":
             # Force inference mode for the lifetime of TextGenerationService
@@ -130,6 +140,11 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
 
     async def Prefill(self, request, context):
         start = time.time_ns()
+        # Decrypt the incoming tokens
+        decrypted_tokens = self.decrypt_tokens(request.batch.tokens)
+        
+        # Update the request with decrypted tokens
+        request.batch.tokens = decrypted_tokens
         if (
             self.model.batch_type in VLM_BATCH_TYPES
         ):  # Hack, i would rather use kwargs in the `from_pb` call
@@ -169,6 +184,10 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
                 raise ValueError(f"Batch ID {batch_pb.id} not found in cache.")
             batches.append(batch)
 
+            # Decrypt the incoming tokens for each batch
+            decrypted_tokens = self.decrypt_tokens(batch.tokens)
+            batch.tokens = decrypted_tokens
+
         if len(batches) == 0:
             raise ValueError("All batches are empty")
 
@@ -204,6 +223,7 @@ def serve(
     trust_remote_code: bool,
     uds_path: Path,
     max_input_tokens: int,
+    fernet_key: bytes,
 ):
     async def serve_inner(
         model_id: str,
@@ -214,6 +234,7 @@ def serve(
         speculate: Optional[int] = None,
         dtype: Optional[str] = None,
         trust_remote_code: bool = False,
+        fernet_key: bytes = None,
     ):
         unix_socket_template = "unix://{}-{}"
         adapter_to_index = {}
@@ -277,7 +298,7 @@ def serve(
             ],
         )
         generate_pb2_grpc.add_TextGenerationServiceServicer_to_server(
-            TextGenerationService(model, Cache(), quantize, server_urls), server
+            TextGenerationService(model, Cache(), quantize, server_urls, fernet_key), server
         )
         SERVICE_NAMES = (
             generate_pb2.DESCRIPTOR.services_by_name["TextGenerationService"].full_name,
@@ -304,5 +325,6 @@ def serve(
             speculate,
             dtype,
             trust_remote_code,
+            fernet_key,
         )
     )
